@@ -1,0 +1,9 @@
+node_modules
+.wxt
+.output
+dist
+.DS_Store
+*.log
+coverage
+.vscode
+.idea
