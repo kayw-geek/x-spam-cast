@@ -23,6 +23,9 @@ export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Ele
   const [mosaic, setMosaic] = useState<boolean>(() => localStorage.getItem(MOSAIC_KEY) === "1");
   const [showStats, setShowStats] = useState(false);
   const [undoable, setUndoable] = useState<Undoable | null>(null);
+  const [newKw, setNewKw] = useState("");
+  const [newUser, setNewUser] = useState("");
+  const [addFeedback, setAddFeedback] = useState<{ kind: "ok" | "info" | "err"; msg: string } | null>(null);
 
   // Newest first — addedAt is a timestamp; subscription-imported items share a fetchedAt so
   // they cluster, but anything LLM-mined or manually-marked surfaces above older bulk imports.
@@ -57,6 +60,12 @@ export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Ele
     return () => clearTimeout(id);
   }, [undoable]);
 
+  useEffect(() => {
+    if (!addFeedback) return;
+    const id = setTimeout(() => setAddFeedback(null), 2500);
+    return () => clearTimeout(id);
+  }, [addFeedback]);
+
   const trainNow = async () => {
     setBatch({ kind: "running" });
     try {
@@ -83,6 +92,58 @@ export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Ele
   const deleteUser = async (u: LearnedUser) => {
     setUndoable({ type: "user", item: u });
     await send({ kind: "learned/delete", payload: { type: "user", value: u.handle } });
+  };
+
+  // Manual add — for users who spot a phrase / handle they want blocked without
+  // waiting for the LLM batch. Substring match means short phrases catch a lot;
+  // we don't try to be clever about regex (keep mental model simple).
+  const addKeyword = async () => {
+    const phrase = newKw.trim();
+    if (!phrase) return;
+    if (state.learned.keywords.some((k) => k.phrase === phrase)) {
+      setAddFeedback({ kind: "info", msg: `"${phrase}" is already in Library` });
+      return;
+    }
+    if (state.whitelist.keywords.includes(phrase)) {
+      if (!confirm(`"${phrase}" is currently whitelisted. Remove from whitelist and add to Library?`)) return;
+    }
+    await mutateState((s) => {
+      if (s.learned.keywords.some((k) => k.phrase === phrase)) return;
+      s.learned.keywords.push({ phrase, addedAt: Date.now(), hits: 0 });
+      s.whitelist.keywords = s.whitelist.keywords.filter((w) => w !== phrase);
+    });
+    setNewKw("");
+    setAddFeedback({ kind: "ok", msg: `Added "${phrase}"` });
+  };
+
+  const addUser = async () => {
+    // Tolerate the @ prefix and surrounding whitespace; X handles are case-insensitive
+    // for matching but we preserve the user's casing for display.
+    const handle = newUser.trim().replace(/^@/, "");
+    if (!handle) return;
+    if (!/^[A-Za-z0-9_]{1,15}$/.test(handle)) {
+      setAddFeedback({ kind: "err", msg: `"${handle}" doesn't look like an X handle (1-15 alphanumeric/underscore)` });
+      return;
+    }
+    const lower = handle.toLowerCase();
+    if (state.learned.users.some((u) => u.handle.toLowerCase() === lower)) {
+      setAddFeedback({ kind: "info", msg: `@${handle} is already in Library` });
+      return;
+    }
+    if (state.whitelist.users.some((h) => h.toLowerCase() === lower)) {
+      if (!confirm(`@${handle} is currently whitelisted. Remove from whitelist and add to Library?`)) return;
+    }
+    await mutateState((s) => {
+      if (s.learned.users.some((u) => u.handle.toLowerCase() === lower)) return;
+      const dn = s.cache.handleToDisplayName[handle];
+      const entry = dn !== undefined
+        ? { handle, displayName: dn, reason: "manually added", addedAt: Date.now() }
+        : { handle, reason: "manually added", addedAt: Date.now() };
+      s.learned.users.push(entry);
+      s.whitelist.users = s.whitelist.users.filter((h) => h.toLowerCase() !== lower);
+    });
+    setNewUser("");
+    setAddFeedback({ kind: "ok", msg: `Added @${handle}` });
   };
 
   const performUndo = async () => {
@@ -178,6 +239,23 @@ export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Ele
           <span>Keywords ({state.learned.keywords.length})</span>
           <span className="text-neutral-500 text-xs group-open:rotate-90 transition-transform">▶</span>
         </summary>
+        <div className="px-2 pt-2 pb-1 flex gap-1">
+          <input
+            type="text"
+            value={newKw}
+            onChange={(e) => setNewKw(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") void addKeyword(); }}
+            placeholder="Add a keyword (substring match)…"
+            className="flex-1 bg-neutral-900 border border-neutral-700 focus:border-emerald-600 outline-none rounded px-2 py-1 text-xs"
+          />
+          <button
+            onClick={addKeyword}
+            disabled={!newKw.trim()}
+            className="px-2 py-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-30 text-white rounded text-xs"
+          >
+            Add
+          </button>
+        </div>
         <ul className="space-y-1 px-2 pb-2 pt-1">
           {sortedKeywords.map((k) => (
             <li key={k.phrase} className="flex items-center justify-between bg-neutral-800 rounded px-2 py-1">
@@ -196,6 +274,23 @@ export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Ele
           <span>Users ({state.learned.users.length})</span>
           <span className="text-neutral-500 text-xs group-open:rotate-90 transition-transform">▶</span>
         </summary>
+        <div className="px-2 pt-2 pb-1 flex gap-1">
+          <input
+            type="text"
+            value={newUser}
+            onChange={(e) => setNewUser(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") void addUser(); }}
+            placeholder="Add a user (e.g. @handle)…"
+            className="flex-1 bg-neutral-900 border border-neutral-700 focus:border-emerald-600 outline-none rounded px-2 py-1 text-xs"
+          />
+          <button
+            onClick={addUser}
+            disabled={!newUser.trim()}
+            className="px-2 py-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-30 text-white rounded text-xs"
+          >
+            Add
+          </button>
+        </div>
         <ul className="space-y-1 px-2 pb-2 pt-1">
           {sortedUsers.map((u) => (
             <li key={u.handle} className="flex items-center justify-between bg-neutral-800 rounded px-2 py-1">
@@ -209,6 +304,16 @@ export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Ele
           ))}
         </ul>
       </details>
+
+      {addFeedback && (
+        <div className={`fixed bottom-3 left-3 right-3 border rounded shadow-lg p-2 text-xs ${
+          addFeedback.kind === "ok" ? "bg-emerald-900 border-emerald-700 text-emerald-200" :
+          addFeedback.kind === "info" ? "bg-amber-900 border-amber-700 text-amber-200" :
+          "bg-red-900 border-red-700 text-red-200"
+        }`}>
+          {addFeedback.msg}
+        </div>
+      )}
 
       {(state.whitelist.keywords.length + state.whitelist.users.length) > 0 && (
         <details className="group border border-neutral-800 rounded">
