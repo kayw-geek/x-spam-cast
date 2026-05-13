@@ -8,6 +8,8 @@ export const LLMConfigSchema = z.object({
   baseUrl: z.string().url(),
   apiKey: z.string(),
   model: z.string().min(1),
+  pricePerMillionInput: z.number().nonnegative().optional(),
+  pricePerMillionOutput: z.number().nonnegative().optional(),
 });
 
 export const ConfigSchema = z.object({
@@ -60,6 +62,12 @@ export const StatsSchema = z.object({
   last7DaysLLMCallRate: z.number().min(0).max(1),
   lastBatchAt: z.number(),
   dailyHits: z.record(z.string(), z.number().int().nonnegative()).default({}),
+  totalPromptTokens: z.number().int().nonnegative().default(0),
+  totalCompletionTokens: z.number().int().nonnegative().default(0),
+  dailyTokens: z.record(z.string(), z.object({
+    p: z.number().int().nonnegative(),
+    c: z.number().int().nonnegative(),
+  })).default({}),
 });
 
 export const StateSchema = z.object({
@@ -90,5 +98,8 @@ export const defaultState = (): ExtensionState => ({
   whitelist: { keywords: [], users: [] },
   pending: { queue: [], candidates: [], userMarked: [] },
   cache: { handleToDisplayName: {} },
-  stats: { totalAnalyzed: 0, totalLLMCalls: 0, totalLocalHits: 0, last7DaysLLMCallRate: 0, lastBatchAt: 0, dailyHits: {} },
+  stats: {
+    totalAnalyzed: 0, totalLLMCalls: 0, totalLocalHits: 0, last7DaysLLMCallRate: 0, lastBatchAt: 0,
+    dailyHits: {}, totalPromptTokens: 0, totalCompletionTokens: 0, dailyTokens: {},
+  },
 });

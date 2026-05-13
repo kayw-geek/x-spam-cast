@@ -26,6 +26,9 @@ export interface LLMAnalysisResult {
   spam_tweets: LLMSpamTweet[];
   candidate_keywords: LLMCandidateKeyword[];
   candidate_users: LLMCandidateUser[];
+  // OpenAI-compatible `usage` block. Most endpoints return this; if missing
+  // both fields are 0 and the cost stat just shows what we know.
+  usage: { promptTokens: number; completionTokens: number };
 }
 
 function filterValid<T>(arr: unknown, schema: z.ZodType<T>, label: string): T[] {
@@ -139,13 +142,20 @@ export class LLMClient {
       const body = await resp.text().catch(() => "");
       throw new Error(`LLM ${resp.status}: ${body.slice(0, 200)}`);
     }
-    const data = await resp.json() as { choices?: { message?: { content?: string } }[] };
+    const data = await resp.json() as {
+      choices?: { message?: { content?: string } }[];
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
+    };
     const content = data.choices?.[0]?.message?.content ?? "";
     const parsed = parseLooseJson(content) as Record<string, unknown>;
     return {
       spam_tweets: filterValid(parsed.spam_tweets, LLMSpamTweetSchema, "spam_tweets"),
       candidate_keywords: filterValid(parsed.candidate_keywords, LLMCandidateKeywordSchema, "candidate_keywords"),
       candidate_users: filterValid(parsed.candidate_users, LLMCandidateUserSchema, "candidate_users"),
+      usage: {
+        promptTokens: data.usage?.prompt_tokens ?? 0,
+        completionTokens: data.usage?.completion_tokens ?? 0,
+      },
     };
   }
 }

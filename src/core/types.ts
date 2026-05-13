@@ -1,6 +1,14 @@
 import type { HideStyle } from "./constants";
 
-export interface LLMConfig { baseUrl: string; apiKey: string; model: string; }
+export interface LLMConfig {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  // Optional pricing in USD per 1M tokens. Used by the popup to render an
+  // estimated cost stat. Defaults are auto-suggested from the model name.
+  pricePerMillionInput?: number;
+  pricePerMillionOutput?: number;
+}
 
 export interface Config {
   llm: LLMConfig;
@@ -48,6 +56,12 @@ export interface Stats {
   lastBatchAt: number;
   // YYYY-MM-DD → tweets hidden that day. Pruned to last 30 days on every read.
   dailyHits: Record<string, number>;
+  // Cumulative token usage across all LLM calls; nonexistent on old states.
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  // YYYY-MM-DD → { p: prompt tokens, c: completion tokens } for that day.
+  // Same 30-day pruning as dailyHits.
+  dailyTokens: Record<string, { p: number; c: number }>;
 }
 
 export interface ExtensionState {

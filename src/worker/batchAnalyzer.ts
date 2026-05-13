@@ -44,6 +44,7 @@ export class BatchAnalyzer {
       s.stats.totalAnalyzed += tweets.length;
       s.stats.totalLLMCalls += 1;
       s.stats.lastBatchAt = Date.now();
+      recordTokens(s, result.usage);
     });
 
     return { newCandidates: collected.newCandidates, analyzed: tweets.length, whitelistRejected: collected.whitelistRejected };
@@ -62,9 +63,30 @@ export class BatchAnalyzer {
     await mutateState((s) => {
       s.pending.userMarked.push({ tweetId: tweet.tweetId, markedAt: Date.now() });
       s.stats.totalLLMCalls += 1;
+      recordTokens(s, result.usage);
     });
 
     return { newCandidates: collected.newCandidates, analyzed: 1, whitelistRejected: collected.whitelistRejected };
+  }
+}
+
+// Record token usage into both running totals and per-day buckets so the popup
+// can render a 7-day cost/token sparkline. Mirrors the dailyHits pruning logic.
+function recordTokens(s: ExtensionState, usage: { promptTokens: number; completionTokens: number }): void {
+  if (usage.promptTokens === 0 && usage.completionTokens === 0) return;
+  s.stats.totalPromptTokens = (s.stats.totalPromptTokens ?? 0) + usage.promptTokens;
+  s.stats.totalCompletionTokens = (s.stats.totalCompletionTokens ?? 0) + usage.completionTokens;
+  const today = new Date();
+  const key = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  s.stats.dailyTokens = s.stats.dailyTokens ?? {};
+  const entry = s.stats.dailyTokens[key] ?? { p: 0, c: 0 };
+  entry.p += usage.promptTokens;
+  entry.c += usage.completionTokens;
+  s.stats.dailyTokens[key] = entry;
+  const cutoff = Date.now() - 30 * 86400_000;
+  for (const k of Object.keys(s.stats.dailyTokens)) {
+    const ts = Date.parse(k);
+    if (!Number.isNaN(ts) && ts < cutoff) delete s.stats.dailyTokens[k];
   }
 }
 

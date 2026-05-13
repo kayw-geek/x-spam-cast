@@ -6,11 +6,14 @@ const cfg = { baseUrl: "https://api.deepseek.com/v1", apiKey: "sk-test", model: 
 describe("LLMClient", () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it("posts to /chat/completions and returns parsed JSON", async () => {
+  it("posts to /chat/completions and returns parsed JSON + usage", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({ choices: [{ message: { content: '{"spam_tweets":[],"candidate_keywords":[],"candidate_users":[]}' } }] }),
+      json: async () => ({
+        choices: [{ message: { content: '{"spam_tweets":[],"candidate_keywords":[],"candidate_users":[]}' } }],
+        usage: { prompt_tokens: 1234, completion_tokens: 56 },
+      }),
     });
     vi.stubGlobal("fetch", fetchMock);
     const c = new LLMClient(cfg);
@@ -23,6 +26,16 @@ describe("LLMClient", () => {
       }),
     );
     expect(result.spam_tweets).toEqual([]);
+    expect(result.usage).toEqual({ promptTokens: 1234, completionTokens: 56 });
+  });
+
+  it("returns 0 token counts when usage block is missing", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: '{"spam_tweets":[],"candidate_keywords":[],"candidate_users":[]}' } }] }),
+    }));
+    const result = await new LLMClient(cfg).analyze({ system: "s", user: "u" });
+    expect(result.usage).toEqual({ promptTokens: 0, completionTokens: 0 });
   });
 
   it("throws on non-200", async () => {

@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import type { ExtensionState } from "@/core/types";
 import { mutateState } from "@/core/storage";
 import { HIDE_STYLES } from "@/core/constants";
+import { suggestPriceForModel } from "@/core/pricing";
 
 type TestResult =
   | { kind: "idle" }
@@ -134,6 +135,69 @@ export function Settings({ state }: { state: ExtensionState }): React.JSX.Elemen
         {test.kind === "err" && (
           <div className="text-xs text-red-400 break-words">✗ {test.detail}</div>
         )}
+
+        {/* Pricing — optional. When set, Stats shows estimated cost per day/week/all-time. */}
+        <div className="border-t border-neutral-800 pt-3 mt-3 space-y-2">
+          <div className="text-xs text-neutral-400 flex items-center justify-between">
+            <span>Pricing <span className="text-neutral-600">(USD per 1M tokens, optional)</span></span>
+            <button
+              type="button"
+              onClick={() => {
+                const p = suggestPriceForModel(config.llm.model);
+                if (!p) { alert(`No default price for "${config.llm.model}". Enter manually.`); return; }
+                setConfig({
+                  ...config,
+                  llm: { ...config.llm, pricePerMillionInput: p.pricePerMillionInput, pricePerMillionOutput: p.pricePerMillionOutput },
+                });
+              }}
+              className="text-[11px] text-blue-400 hover:text-blue-300 underline"
+            >
+              Auto-fill from model
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="text-neutral-500 text-[11px]">Input $/1M</span>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="e.g. 0.27"
+                className="w-full mt-1 bg-neutral-800 px-2 py-1 rounded text-xs"
+                value={config.llm.pricePerMillionInput ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  const llm = { ...config.llm };
+                  if (v === "") delete llm.pricePerMillionInput;
+                  else llm.pricePerMillionInput = Number(v);
+                  setConfig({ ...config, llm });
+                }}
+              />
+            </label>
+            <label className="block">
+              <span className="text-neutral-500 text-[11px]">Output $/1M</span>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="e.g. 1.10"
+                className="w-full mt-1 bg-neutral-800 px-2 py-1 rounded text-xs"
+                value={config.llm.pricePerMillionOutput ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  const llm = { ...config.llm };
+                  if (v === "") delete llm.pricePerMillionOutput;
+                  else llm.pricePerMillionOutput = Number(v);
+                  setConfig({ ...config, llm });
+                }}
+              />
+            </label>
+          </div>
+          <div className="text-[11px] text-neutral-500 leading-relaxed">
+            Default values are public list prices and may not match your relay / promotional rates.
+            Leave empty to skip cost estimates (Stats will still show token counts).
+          </div>
+        </div>
       </Section>
 
       <Section title="Behavior">
