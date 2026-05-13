@@ -122,7 +122,11 @@ export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Ele
     const handle = newUser.trim().replace(/^@/, "");
     if (!handle) return;
     if (!/^[A-Za-z0-9_]{1,15}$/.test(handle)) {
-      setAddFeedback({ kind: "err", msg: `"${handle}" doesn't look like an X handle (1-15 alphanumeric/underscore)` });
+      // Common confusion: typing emoji / Chinese / phrases here. Redirect to the right input.
+      setAddFeedback({
+        kind: "err",
+        msg: `"${handle}" isn't a valid X username. To block tweets containing this text, use the Keywords box above.`,
+      });
       return;
     }
     const lower = handle.toLowerCase();
@@ -280,7 +284,7 @@ export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Ele
             value={newUser}
             onChange={(e) => setNewUser(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") void addUser(); }}
-            placeholder="Add a user (e.g. @handle)…"
+            placeholder="Block an X user (e.g. @handle) — letters/digits/underscore only"
             className="flex-1 bg-neutral-900 border border-neutral-700 focus:border-emerald-600 outline-none rounded px-2 py-1 text-xs"
           />
           <button
