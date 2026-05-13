@@ -6,12 +6,10 @@ export type Message =
   | { kind: "batch/trigger"; payload?: undefined }
   | { kind: "learned/delete"; payload: { type: "keyword" | "user"; value: string } }
   | { kind: "whitelist/remove"; payload: { type: "keyword" | "user"; value: string } }
-  | { kind: "muteSync/retry"; payload?: undefined }
   | { kind: "subscription/refresh"; payload?: undefined }
-  | { kind: "backup/push"; payload?: undefined }
-  | { kind: "backup/pull"; payload?: undefined }
-  | { kind: "auth/captured"; payload: { bearer: string; csrf: string } }
-  | { kind: "restId/update"; payload: { handle: string; restId: string } }
+  | { kind: "pack/import"; payload: { json: string; filename?: string } }
+  | { kind: "sync/push"; payload?: undefined }
+  | { kind: "sync/pull"; payload?: undefined }
   | { kind: "stats/localHit"; payload?: undefined };
 
 export async function send<M extends Message>(msg: M): Promise<unknown> {
@@ -37,7 +35,6 @@ export function tweetSignature(t: ExtractedTweet): QueuedTweet {
     text: t.text,
     observedAt: Date.now(),
   };
-  if (t.restId !== undefined) sig.restId = t.restId;
   if (t.displayName !== undefined) sig.displayName = t.displayName;
   return sig;
 }

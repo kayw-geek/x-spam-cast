@@ -1,5 +1,5 @@
 import { Queue } from "./queue";
-import { LLMClient } from "./llmClient";
+import { LLMClient, type LLMAnalysisResult } from "./llmClient";
 import { buildPrompt } from "./promptBuilder";
 import { mutateState } from "@/core/storage";
 import type { ExtensionState, Candidate, QueuedTweet } from "@/core/types";
@@ -28,8 +28,15 @@ export class BatchAnalyzer {
     }
 
     const client = new LLMClient(state.config.llm);
-    const prompt = buildPrompt(tweets, state.config.enabledCategories, state.config.customPrompt);
-    const result = await client.analyze(prompt);
+    const prompt = buildPrompt(tweets, state.config.customPrompt);
+    let result: LLMAnalysisResult;
+    try {
+      result = await client.analyze(prompt);
+    } catch (e) {
+      // Network/timeout/parse failure — re-enqueue so the batch isn't lost
+      for (const t of tweets) await this.queue.enqueue(t);
+      throw e;
+    }
 
     const collected = collectCandidates(result, state, "batch");
 
@@ -47,7 +54,7 @@ export class BatchAnalyzer {
   async analyzeMarkedTweet(tweet: QueuedTweet, state: ExtensionState): Promise<AnalyzeResult> {
     if (!state.config.llm.apiKey) throw new Error("LLM API key not configured");
     const client = new LLMClient(state.config.llm);
-    const prompt = buildPrompt([tweet], state.config.enabledCategories, state.config.customPrompt);
+    const prompt = buildPrompt([tweet], state.config.customPrompt);
     const result = await client.analyze(prompt);
 
     const collected = collectCandidates(result, state, `marked-tweet ${tweet.tweetId}`);
@@ -61,13 +68,8 @@ export class BatchAnalyzer {
   }
 }
 
-interface LLMResult {
-  candidate_keywords: { phrase: string; category: import("@/core/constants").SpamCategory; evidence_tweet_ids: string[] }[];
-  candidate_users: { handle: string; reason: string; evidence_tweet_ids: string[] }[];
-}
-
 function collectCandidates(
-  result: LLMResult,
+  result: LLMAnalysisResult,
   state: ExtensionState,
   source: string,
 ): { newCandidates: Candidate[]; whitelistRejected: number } {
@@ -86,9 +88,9 @@ function collectCandidates(
     if (learnedKeywords.has(k.phrase)) continue;
     if (wlKeywords.has(k.phrase)) { whitelistRejected++; continue; }
     newCandidates.push({
-      type: "keyword", value: k.phrase, category: k.category,
+      type: "keyword", value: k.phrase,
       evidence: k.evidence_tweet_ids, suggestedAt: Date.now(),
-      llmReasoning: source === "batch" ? `category=${k.category}` : `from ${source}, category=${k.category}`,
+      llmReasoning: source === "batch" ? "spam pattern" : `from ${source}`,
     });
   }
   for (const u of result.candidate_users) {

@@ -3,7 +3,6 @@ import { TweetExtractor } from "@/content/extractor";
 import { LocalScorer } from "@/content/scorer";
 import { Hider } from "@/content/hider";
 import { MarkButton } from "@/content/markButton";
-import { TSF_BRIDGE_TAG, type BridgeMessage } from "@/content/restIdSniffer";
 import { loadState, subscribeState } from "@/core/storage";
 import { send, tweetSignature } from "@/core/messaging";
 
@@ -26,18 +25,6 @@ export default defineContentScript({
         users: s.learned.users.map((u) => u.handle),
       });
       hider.setStyle(s.config.hideStyle);
-    });
-
-    // Bridge: receive messages from MAIN-world sniffer via window.postMessage
-    window.addEventListener("message", (ev) => {
-      const data = ev.data as BridgeMessage | undefined;
-      if (!data || data.tag !== TSF_BRIDGE_TAG) return;
-      if (!chrome.runtime?.id) return; // extension reloaded — drop silently
-      if (data.kind === "restId") {
-        chrome.runtime.sendMessage({ kind: "restId/update", payload: { handle: data.handle, restId: data.restId } }).catch(() => {});
-      } else if (data.kind === "auth") {
-        chrome.runtime.sendMessage({ kind: "auth/captured", payload: { bearer: data.bearer, csrf: data.csrf } }).catch(() => {});
-      }
     });
 
     // Detect extension reload — old content script keeps running on the page but its

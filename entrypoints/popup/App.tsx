@@ -2,19 +2,23 @@ import React, { useState } from "react";
 import { useStore } from "@/popup/useStore";
 import { Settings } from "@/popup/components/Settings";
 import { LearnedList } from "@/popup/components/LearnedList";
-import { Stats } from "@/popup/components/Stats";
-import { ImportExport } from "@/popup/components/ImportExport";
+import { Sync } from "@/popup/components/Sync";
+import { Onboarding } from "@/popup/components/Onboarding";
 
-type Tab = "learned" | "settings" | "stats";
+type Tab = "learned" | "sync" | "settings";
 
 export function App(): React.JSX.Element {
   const state = useStore();
   const [tab, setTab] = useState<Tab>("learned");
   if (!state) return <div className="p-4">Loading…</div>;
 
+  // No LLM key configured → the Library tab is meaningless. Show onboarding instead;
+  // the user shouldn't have to discover the Settings tab on their own.
+  const needsSetup = !state.config.llm.apiKey;
+
   const tabs: { id: Tab; label: string; badge?: number }[] = [
     { id: "learned", label: "Library", badge: state.learned.keywords.length + state.learned.users.length },
-    { id: "stats", label: "Stats" },
+    { id: "sync", label: "Sync" },
     { id: "settings", label: "Settings" },
   ];
 
@@ -32,8 +36,10 @@ export function App(): React.JSX.Element {
         ))}
       </nav>
       <main className="flex-1 overflow-y-auto p-3">
-        {tab === "learned" && <LearnedList state={state} />}
-        {tab === "stats" && (<><Stats state={state} /><ImportExport /></>)}
+        {tab === "learned" && (needsSetup
+          ? <Onboarding onOpenSettings={() => setTab("settings")} />
+          : <LearnedList state={state} />)}
+        {tab === "sync" && <Sync state={state} />}
         {tab === "settings" && <Settings state={state} />}
       </main>
     </div>

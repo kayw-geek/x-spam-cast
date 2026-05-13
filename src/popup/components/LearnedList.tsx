@@ -1,42 +1,47 @@
 import React, { useEffect, useState } from "react";
-import type { ExtensionState } from "@/core/types";
+import type { ExtensionState, LearnedKeyword, LearnedUser } from "@/core/types";
 import { send } from "@/core/messaging";
-import { useSyncProgress } from "@/popup/useStore";
-
-interface RetryReport {
-  ok: boolean;
-  noAuth?: boolean;
-  rateLimited?: boolean;
-  attempted: number;
-  succeeded: number;
-  failed: { value: string; reason: string }[];
-  removed: string[];
-  usersSkippedNoRestId: number;
-}
-
-type RetryStatus = { kind: "idle" } | { kind: "running" } | { kind: "done"; report: RetryReport };
+import { mutateState } from "@/core/storage";
+import { Stats } from "./Stats";
 
 type BatchStatus =
   | { kind: "idle" }
   | { kind: "running" }
   | { kind: "ok"; analyzed: number; applied: number; whitelistRejected: number }
   | { kind: "err"; detail: string };
+interface BatchResponse { ok: boolean; analyzed?: number; applied?: number; whitelistRejected?: number; error?: string; }
 
-interface BatchResponse {
-  ok: boolean;
-  analyzed?: number;
-  applied?: number;
-  whitelistRejected?: number;
-  error?: string;
-}
+type Undoable =
+  | { type: "keyword"; item: LearnedKeyword }
+  | { type: "user"; item: LearnedUser };
 
 const MOSAIC_KEY = "tsf_mosaic";
+const UNDO_TIMEOUT_MS = 6000;
 
 export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Element {
-  const [retry, setRetry] = useState<RetryStatus>({ kind: "idle" });
   const [batch, setBatch] = useState<BatchStatus>({ kind: "idle" });
   const [mosaic, setMosaic] = useState<boolean>(() => localStorage.getItem(MOSAIC_KEY) === "1");
-  const progress = useSyncProgress();
+  const [showStats, setShowStats] = useState(false);
+  const [undoable, setUndoable] = useState<Undoable | null>(null);
+
+  // Newest first — addedAt is a timestamp; subscription-imported items share a fetchedAt so
+  // they cluster, but anything LLM-mined or manually-marked surfaces above older bulk imports.
+  const sortedKeywords = [...state.learned.keywords].sort((a, b) => b.addedAt - a.addedAt);
+  const sortedUsers = [...state.learned.users].sort((a, b) => b.addedAt - a.addedAt);
+
+  // Lightweight counts for the always-visible peek; the expanded Stats view does the rest.
+  const dailyHits = state.stats.dailyHits ?? {};
+  const today = new Date();
+  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const todayCount = dailyHits[todayKey] ?? 0;
+  let weekCount = 0;
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(today);
+    d.setDate(today.getDate() - i);
+    const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    weekCount += dailyHits[k] ?? 0;
+  }
+
   const toggleMosaic = () => {
     setMosaic((m) => {
       const next = !m;
@@ -44,27 +49,13 @@ export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Ele
       return next;
     });
   };
-  // hover to peek; click toggles globally
   const maskCls = mosaic ? "blur-sm hover:blur-none transition-[filter] cursor-help select-none" : "";
 
-  // Restore last sync result on mount so user sees it after closing/reopening popup
   useEffect(() => {
-    void chrome.storage.local.get("tsf_last_sync").then((r) => {
-      const last = r.tsf_last_sync as RetryReport | undefined;
-      if (last) setRetry({ kind: "done", report: last });
-    });
-  }, []);
-
-  const unsynced = [
-    ...state.learned.keywords.filter((k) => !k.syncedToTwitter).map((k) => `kw: ${k.phrase}`),
-    ...state.learned.users.filter((u) => !u.syncedToTwitter).map((u) => `user: @${u.handle}`),
-  ];
-
-  const doRetry = async () => {
-    setRetry({ kind: "running" });
-    const r = (await send({ kind: "muteSync/retry" })) as RetryReport;
-    setRetry({ kind: "done", report: r });
-  };
+    if (!undoable) return;
+    const id = setTimeout(() => setUndoable(null), UNDO_TIMEOUT_MS);
+    return () => clearTimeout(id);
+  }, [undoable]);
 
   const trainNow = async () => {
     setBatch({ kind: "running" });
@@ -85,150 +76,150 @@ export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Ele
     }
   };
 
+  const deleteKeyword = async (k: LearnedKeyword) => {
+    setUndoable({ type: "keyword", item: k });
+    await send({ kind: "learned/delete", payload: { type: "keyword", value: k.phrase } });
+  };
+  const deleteUser = async (u: LearnedUser) => {
+    setUndoable({ type: "user", item: u });
+    await send({ kind: "learned/delete", payload: { type: "user", value: u.handle } });
+  };
+
+  const performUndo = async () => {
+    if (!undoable) return;
+    const u = undoable;
+    setUndoable(null);
+    await mutateState((s) => {
+      if (u.type === "keyword") {
+        if (!s.learned.keywords.some((x) => x.phrase === u.item.phrase)) {
+          s.learned.keywords.push(u.item);
+        }
+        s.whitelist.keywords = s.whitelist.keywords.filter((k) => k !== u.item.phrase);
+      } else {
+        const lower = u.item.handle.toLowerCase();
+        if (!s.learned.users.some((x) => x.handle.toLowerCase() === lower)) {
+          s.learned.users.push(u.item);
+        }
+        s.whitelist.users = s.whitelist.users.filter((h) => h.toLowerCase() !== lower);
+      }
+    });
+  };
+
   return (
     <div className="space-y-3 text-sm">
-      <div className="space-y-2">
-        <div className="flex items-center gap-2 text-xs text-neutral-400">
-          <span className="flex-1">
-            Queue: {state.pending.queue.length} / {state.config.batchThreshold}
-            <span className="text-neutral-600 ml-2">
-              auto-reviews when threshold hit
-            </span>
+      {/* Compact stats peek — today + week, expand for full sparkline */}
+      <div className="bg-neutral-900 border border-neutral-800 rounded">
+        <button
+          onClick={() => setShowStats((v) => !v)}
+          className="w-full flex items-center justify-between px-3 py-2 text-xs text-neutral-400 hover:bg-neutral-800/50"
+        >
+          <span>
+            <span className="text-emerald-400">{todayCount}</span> hidden today
+            <span className="text-neutral-600 mx-1">·</span>
+            <span className="text-neutral-300">{weekCount}</span> this week
           </span>
-          <button
-            onClick={trainNow}
-            disabled={batch.kind === "running" || state.pending.queue.length === 0}
-            className="text-neutral-500 hover:text-emerald-400 disabled:opacity-30 disabled:hover:text-neutral-500 underline"
-            title="Force LLM review now (debug — normally auto-fires at threshold)"
-          >
-            {batch.kind === "running" ? "reviewing…" : "force now"}
-          </button>
-          <button
-            onClick={toggleMosaic}
-            title={mosaic ? "Show contents" : "Mosaic — hide spam phrases (work-safe)"}
-            className={`px-2 py-0.5 rounded text-xs ${mosaic ? "bg-amber-700 hover:bg-amber-600 text-white" : "bg-neutral-800 hover:bg-neutral-700 text-neutral-400"}`}
-          >
-            {mosaic ? "🫥" : "👁"}
-          </button>
-        </div>
-        {batch.kind === "ok" && (
-          <div className="text-xs bg-emerald-900/40 border border-emerald-700 rounded p-2">
-            ✓ Analyzed {batch.analyzed} · {batch.applied} new auto-blocked
-            {batch.whitelistRejected > 0 && <span className="text-neutral-400"> · {batch.whitelistRejected} dropped (whitelist)</span>}
-            {batch.applied === 0 && batch.analyzed > 0 && (
-              <span className="text-neutral-400"> · LLM judged none worth blocking</span>
-            )}
-            {batch.analyzed === 0 && (
-              <span className="text-neutral-400"> · queue empty — browse x.com first</span>
-            )}
-            {batch.applied > 0 && (
-              <div className="text-neutral-400 mt-0.5">
-                Twitter mute syncing in background — items below flip ● green as they sync.
-              </div>
-            )}
-          </div>
-        )}
-        {batch.kind === "err" && (
-          <div className="text-xs bg-red-900/40 border border-red-700 rounded p-2 break-words">
-            ✗ {batch.detail}
+          <span>{showStats ? "▾" : "▸"} stats</span>
+        </button>
+        {showStats && (
+          <div className="px-3 pb-3 border-t border-neutral-800 pt-3">
+            <Stats state={state} />
           </div>
         )}
       </div>
 
-      {unsynced.length > 0 && (
-        <div className="bg-amber-900/40 border border-amber-700 rounded p-2 text-xs space-y-2">
-          <div className="font-semibold">
-            ⚠️ {unsynced.length} items not synced to Twitter
-          </div>
-          <div>
-            <button onClick={doRetry} disabled={retry.kind === "running" || progress !== null}
-              className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white px-2 py-1 rounded text-xs">
-              {(retry.kind === "running" || progress !== null) ? "Syncing…" : "Sync to Twitter now"}
-            </button>
-            {progress !== null && (
-              <div className="mt-1 text-emerald-300">
-                Syncing {progress.phase}: {progress.completed}/{progress.total}
-                {progress.current && <> · <span className={maskCls}>{progress.current}</span></>}
-                <div className="text-neutral-500">Runs in background — safe to close popup.</div>
-              </div>
-            )}
-            {retry.kind === "done" && retry.report.noAuth && (
-              <div className="text-red-300 mt-1">
-                ✗ No Twitter auth captured — open a x.com tab and scroll briefly, then retry.
-              </div>
-            )}
-            {retry.kind === "done" && !retry.report.noAuth && (
-              <div className={retry.report.ok ? "text-emerald-300 mt-1" : "text-amber-200 mt-1"}>
-                {retry.report.ok ? "✓" : retry.report.rateLimited ? "🛑" : "⚠"}{" "}
-                {retry.report.succeeded}/{retry.report.attempted} synced
-                {retry.report.removed && retry.report.removed.length > 0 && (
-                  <span className="text-neutral-400"> · {retry.report.removed.length} removed (likely suspended/deleted)</span>
-                )}
-                {retry.report.rateLimited && (
-                  <div className="text-red-300 mt-1">
-                    Twitter rate-limited (HTTP 429). Stopped to avoid making it worse — wait ~15 min then click Sync again.
-                  </div>
-                )}
-                {!retry.report.rateLimited && retry.report.failed.length > 0 && (
-                  <ul className="ml-3 mt-1 list-disc space-y-0.5">
-                    {retry.report.failed.slice(0, 3).map((f, i) => (
-                      <li key={i} className="break-words"><span className={maskCls}>{f.value}</span>: {f.reason}</li>
-                    ))}
-                    {retry.report.failed.length > 3 && <li>…+{retry.report.failed.length - 3} more</li>}
-                  </ul>
-                )}
-              </div>
-            )}
-          </div>
+      <div className="flex items-center gap-2 text-xs text-neutral-400">
+        <span className="flex-1">
+          Queue: {state.pending.queue.length} / {state.config.batchThreshold}
+          <span className="text-neutral-600 ml-2">auto-reviews when threshold hit</span>
+        </span>
+        {state.pending.queue.length > 0 && (
+          <button
+            onClick={trainNow}
+            disabled={batch.kind === "running"}
+            className="text-neutral-600 hover:text-emerald-400 disabled:opacity-30 underline text-[11px]"
+            title="Force LLM review now (debug — normally auto-fires at threshold)"
+          >
+            {batch.kind === "running" ? "reviewing…" : "force now"}
+          </button>
+        )}
+      </div>
+
+      {batch.kind === "ok" && (
+        <div className="text-xs bg-emerald-900/40 border border-emerald-700 rounded p-2">
+          ✓ Analyzed {batch.analyzed} · {batch.applied} new auto-blocked
+          {batch.whitelistRejected > 0 && <span className="text-neutral-400"> · {batch.whitelistRejected} dropped (whitelist)</span>}
+          {batch.applied === 0 && batch.analyzed > 0 && (
+            <span className="text-neutral-400"> · LLM judged none worth blocking</span>
+          )}
+          {batch.analyzed === 0 && (
+            <span className="text-neutral-400"> · queue empty — browse x.com first</span>
+          )}
+        </div>
+      )}
+      {batch.kind === "err" && (
+        <div className="text-xs bg-red-900/40 border border-red-700 rounded p-2 break-words">
+          ✗ {batch.detail}
         </div>
       )}
 
-      <section>
-        <h3 className="font-semibold mb-1">Keywords ({state.learned.keywords.length})</h3>
-        <ul className="space-y-1">
-          {state.learned.keywords.map((k) => (
+      {/* View options row (no sync legend — local filtering only) */}
+      <div className="flex items-center justify-end text-[11px] text-neutral-500 pt-1">
+        <button
+          onClick={toggleMosaic}
+          title={mosaic ? "Show contents" : "Mosaic — hide spam phrases (work-safe)"}
+          className={`px-1.5 py-0.5 rounded text-[11px] ${mosaic ? "bg-amber-700/70 hover:bg-amber-600 text-white" : "text-neutral-500 hover:text-neutral-300"}`}
+        >
+          {mosaic ? "🫥 mosaic on" : "🫥 mosaic"}
+        </button>
+      </div>
+
+      <details className="group border border-neutral-800 rounded">
+        <summary className="cursor-pointer select-none px-2 py-1.5 text-sm font-semibold flex items-center justify-between hover:bg-neutral-900">
+          <span>Keywords ({state.learned.keywords.length})</span>
+          <span className="text-neutral-500 text-xs group-open:rotate-90 transition-transform">▶</span>
+        </summary>
+        <ul className="space-y-1 px-2 pb-2 pt-1">
+          {sortedKeywords.map((k) => (
             <li key={k.phrase} className="flex items-center justify-between bg-neutral-800 rounded px-2 py-1">
               <span className="font-mono text-xs">
-                <span title={k.syncedToTwitter ? "synced to Twitter mute" : "local DOM hide only — Twitter not synced"}
-                  className={k.syncedToTwitter ? "text-emerald-400 mr-1" : "text-amber-400 mr-1"}>
-                  {k.syncedToTwitter ? "●" : "○"}
-                </span>
-                <span className={maskCls}>{k.phrase}</span> <span className="text-neutral-500">[{k.category}]</span>
+                <span className={maskCls}>{k.phrase}</span>
               </span>
-              <button onClick={() => send({ kind: "learned/delete", payload: { type: "keyword", value: k.phrase } })}
+              <button onClick={() => deleteKeyword(k)}
                 className="text-red-400 hover:text-red-300 text-xs">delete</button>
             </li>
           ))}
         </ul>
-      </section>
+      </details>
 
-      <section>
-        <h3 className="font-semibold mb-1">Users ({state.learned.users.length})</h3>
-        <ul className="space-y-1">
-          {state.learned.users.map((u) => (
+      <details className="group border border-neutral-800 rounded">
+        <summary className="cursor-pointer select-none px-2 py-1.5 text-sm font-semibold flex items-center justify-between hover:bg-neutral-900">
+          <span>Users ({state.learned.users.length})</span>
+          <span className="text-neutral-500 text-xs group-open:rotate-90 transition-transform">▶</span>
+        </summary>
+        <ul className="space-y-1 px-2 pb-2 pt-1">
+          {sortedUsers.map((u) => (
             <li key={u.handle} className="flex items-center justify-between bg-neutral-800 rounded px-2 py-1">
               <span className="text-xs min-w-0 truncate">
-                <span title={u.syncedToTwitter ? "synced to Twitter block/mute" : "local DOM hide only — not synced to Twitter"}
-                  className={u.syncedToTwitter ? "text-emerald-400 mr-1" : "text-amber-400 mr-1"}>
-                  {u.syncedToTwitter ? "●" : "○"}
-                </span>
                 {u.displayName && <span className={`text-neutral-200 ${maskCls}`}>{u.displayName} </span>}
                 <span className={`font-mono text-neutral-500 ${maskCls}`}>@{u.handle}</span>
               </span>
-              <button onClick={() => send({ kind: "learned/delete", payload: { type: "user", value: u.handle } })}
+              <button onClick={() => deleteUser(u)}
                 className="text-red-400 hover:text-red-300 text-xs ml-2 shrink-0">delete</button>
             </li>
           ))}
         </ul>
-      </section>
+      </details>
 
       {(state.whitelist.keywords.length + state.whitelist.users.length) > 0 && (
-        <section>
-          <h3 className="font-semibold mb-1">
-            Whitelist ({state.whitelist.keywords.length + state.whitelist.users.length})
-            <span className="text-neutral-500 font-normal text-xs ml-2">auto-added when you delete from Library — LLM won't propose these again</span>
-          </h3>
-          <ul className="space-y-1">
+        <details className="group border border-neutral-800 rounded">
+          <summary className="cursor-pointer select-none px-2 py-1.5 text-sm font-semibold flex items-center justify-between hover:bg-neutral-900">
+            <span>
+              Whitelist ({state.whitelist.keywords.length + state.whitelist.users.length})
+              <span className="text-neutral-500 font-normal text-xs ml-2">auto-added on delete</span>
+            </span>
+            <span className="text-neutral-500 text-xs group-open:rotate-90 transition-transform">▶</span>
+          </summary>
+          <ul className="space-y-1 px-2 pb-2 pt-1">
             {state.whitelist.keywords.map((k) => (
               <li key={`wlk-${k}`} className="flex items-center justify-between bg-neutral-900 border border-neutral-800 rounded px-2 py-1">
                 <span className="font-mono text-xs text-neutral-300">
@@ -248,7 +239,23 @@ export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Ele
               </li>
             ))}
           </ul>
-        </section>
+        </details>
+      )}
+
+      {undoable && (
+        <div className="fixed bottom-3 left-3 right-3 bg-neutral-900 border border-neutral-700 rounded shadow-lg p-2 text-xs flex items-center gap-2">
+          <span className="flex-1 truncate">
+            Removed <span className="font-mono text-neutral-400">
+              {undoable.type === "keyword" ? undoable.item.phrase : `@${undoable.item.handle}`}
+            </span> · auto-whitelisted
+          </span>
+          <button
+            onClick={performUndo}
+            className="bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded text-[11px] font-semibold"
+          >
+            Undo
+          </button>
+        </div>
       )}
     </div>
   );

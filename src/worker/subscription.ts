@@ -1,10 +1,8 @@
 import { z } from "zod";
-import { SpamCategoryEnum } from "@/core/schemas";
-import { LEGACY_CATEGORY_MAP, type SpamCategory } from "@/core/constants";
 import { mutateState } from "@/core/storage";
 import type { LearnedKeyword, LearnedUser } from "@/core/types";
 
-// Lenient pack schema — accepts category strings from old vocab too (auto-remapped).
+// Lenient pack schema — `category` is accepted (and ignored) for back-compat with old packs.
 export const SpamPackSchema = z.object({
   version: z.number().optional(),
   name: z.string().optional(),
@@ -19,6 +17,13 @@ export const SpamPackSchema = z.object({
 });
 export type SpamPack = z.infer<typeof SpamPackSchema>;
 
+export interface MergeStats {
+  newKeywords: number;
+  newUsers: number;
+  skippedWhitelist: number;
+  skippedDuplicate: number;
+}
+
 export interface RefreshReport {
   ok: boolean;
   error?: string;
@@ -31,10 +36,64 @@ export interface RefreshReport {
   fetchedAt: number;
 }
 
-const remapCategory = (c: string | undefined): SpamCategory => {
-  if (!c) return "spam";
-  return LEGACY_CATEGORY_MAP[c] ?? "spam";
-};
+export interface ImportPackReport {
+  ok: boolean;
+  error?: string;
+  packName?: string;
+  newKeywords: number;
+  newUsers: number;
+  skippedWhitelist: number;
+  skippedDuplicate: number;
+  importedAt: number;
+}
+
+// Merge a parsed SpamPack into the user's learned + whitelist state.
+// Shared between subscription URL refresh and local file import.
+// - whitelist hits are skipped (the user previously rejected those phrases/users)
+// - already-learned items are skipped (no overwrite)
+// - returns counts so the caller can render a "+X kw, +Y users" message
+export async function applyPack(
+  pack: SpamPack,
+  source: string,
+  appliedAt: number = Date.now(),
+): Promise<MergeStats> {
+  let newKeywords = 0, newUsers = 0, skippedWhitelist = 0, skippedDuplicate = 0;
+
+  await mutateState((s) => {
+    const wlKw = new Set(s.whitelist.keywords);
+    const wlUser = new Set(s.whitelist.users.map((u) => u.toLowerCase()));
+    const learnedKw = new Set(s.learned.keywords.map((k) => k.phrase));
+    const learnedUser = new Set(s.learned.users.map((u) => u.handle.toLowerCase()));
+
+    for (const k of pack.keywords) {
+      if (wlKw.has(k.phrase)) { skippedWhitelist++; continue; }
+      if (learnedKw.has(k.phrase)) { skippedDuplicate++; continue; }
+      const entry: LearnedKeyword = {
+        phrase: k.phrase,
+        addedAt: appliedAt,
+        hits: 0,
+      };
+      s.learned.keywords.push(entry);
+      learnedKw.add(k.phrase);
+      newKeywords++;
+    }
+    for (const u of pack.users) {
+      const lower = u.handle.toLowerCase();
+      if (wlUser.has(lower)) { skippedWhitelist++; continue; }
+      if (learnedUser.has(lower)) { skippedDuplicate++; continue; }
+      const entry: LearnedUser = {
+        handle: u.handle,
+        reason: u.reason ?? `from ${source}`,
+        addedAt: appliedAt,
+      };
+      s.learned.users.push(entry);
+      learnedUser.add(lower);
+      newUsers++;
+    }
+  });
+
+  return { newKeywords, newUsers, skippedWhitelist, skippedDuplicate };
+}
 
 export async function refreshSubscription(url: string): Promise<RefreshReport> {
   const fetchedAt = Date.now();
@@ -69,52 +128,29 @@ export async function refreshSubscription(url: string): Promise<RefreshReport> {
   }
   const pack = parsed.data;
 
-  let newKeywords = 0, newUsers = 0, skippedWhitelist = 0, skippedDuplicate = 0;
-  const result: { source: string; packName: string | undefined } = { source: url, packName: pack.name };
+  const stats = await applyPack(pack, `subscription ${pack.name ?? url}`, fetchedAt);
 
-  await mutateState((s) => {
-    const wlKw = new Set(s.whitelist.keywords);
-    const wlUser = new Set(s.whitelist.users.map((u) => u.toLowerCase()));
-    const learnedKw = new Set(s.learned.keywords.map((k) => k.phrase));
-    const learnedUser = new Set(s.learned.users.map((u) => u.handle.toLowerCase()));
-
-    for (const k of pack.keywords) {
-      if (wlKw.has(k.phrase)) { skippedWhitelist++; continue; }
-      if (learnedKw.has(k.phrase)) { skippedDuplicate++; continue; }
-      const cat = SpamCategoryEnum.safeParse(k.category).success ? (k.category as SpamCategory) : remapCategory(k.category);
-      const entry: LearnedKeyword = {
-        phrase: k.phrase,
-        category: cat,
-        addedAt: fetchedAt,
-        hits: 0,
-        syncedToTwitter: false,
-      };
-      s.learned.keywords.push(entry);
-      learnedKw.add(k.phrase);
-      newKeywords++;
-    }
-    for (const u of pack.users) {
-      const lower = u.handle.toLowerCase();
-      if (wlUser.has(lower)) { skippedWhitelist++; continue; }
-      if (learnedUser.has(lower)) { skippedDuplicate++; continue; }
-      const entry: LearnedUser = {
-        handle: u.handle,
-        reason: u.reason ?? `from subscription ${pack.name ?? url}`,
-        addedAt: fetchedAt,
-        syncedToTwitter: false,
-      };
-      const cachedRest = s.cache.handleToRestId[u.handle];
-      if (cachedRest !== undefined) entry.restId = cachedRest;
-      s.learned.users.push(entry);
-      learnedUser.add(lower);
-      newUsers++;
-    }
-
-    s.config.subscriptionLastFetchedAt = fetchedAt;
-  });
+  // Track when we last pulled from the URL so the 24h auto-refresh stays paced.
+  await mutateState((s) => { s.config.subscriptionLastFetchedAt = fetchedAt; });
 
   return {
-    ok: true, source: result.source, ...(result.packName !== undefined && { packName: result.packName }),
-    newKeywords, newUsers, skippedWhitelist, skippedDuplicate, fetchedAt,
+    ok: true,
+    source: url,
+    ...(pack.name !== undefined && { packName: pack.name }),
+    ...stats,
+    fetchedAt,
+  };
+}
+
+// Local-file import — caller has already parsed JSON and validated against SpamPackSchema.
+// Background handler validates + calls this so the merge logic stays in one place.
+export async function importPack(pack: SpamPack, sourceLabel = "imported file"): Promise<ImportPackReport> {
+  const importedAt = Date.now();
+  const stats = await applyPack(pack, sourceLabel, importedAt);
+  return {
+    ok: true,
+    ...(pack.name !== undefined && { packName: pack.name }),
+    ...stats,
+    importedAt,
   };
 }

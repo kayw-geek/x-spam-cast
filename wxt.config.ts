@@ -8,7 +8,7 @@ export default defineConfig({
   manifest: {
     name: "XSpamCast",
     description: "LLM-powered X/Twitter spam filter with subscribable community packs",
-    permissions: ["storage", "webRequest", "scripting"],
+    permissions: ["storage", "scripting", "alarms"],
     host_permissions: ["https://x.com/*", "https://twitter.com/*"],
     optional_host_permissions: ["<all_urls>"],
     action: { default_popup: "popup/index.html", default_title: "XSpamCast" },

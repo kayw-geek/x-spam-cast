@@ -12,7 +12,6 @@ export class Hider {
     el.setAttribute(HIDE_ATTR, this.style);
     switch (this.style) {
       case "nuke":   el.style.display = "none"; break;
-      case "dim":    el.style.opacity = "0.15"; el.style.filter = "blur(2px)"; break;
       case "collapse": this.collapseEl(el, reason); break;
     }
   }

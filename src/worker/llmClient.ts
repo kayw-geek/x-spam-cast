@@ -1,14 +1,44 @@
+import { z } from "zod";
 import type { LLMConfig } from "@/core/types";
-import type { SpamCategory } from "@/core/constants";
 
-export interface LLMSpamTweet { id: string; category: SpamCategory; confidence: number; reason: string; }
-export interface LLMCandidateKeyword { phrase: string; evidence_tweet_ids: string[]; category: SpamCategory; }
-export interface LLMCandidateUser { handle: string; evidence_tweet_ids: string[]; reason: string; }
+// Per-item schemas — invalid items are dropped (not the whole response) so a single
+// malformed candidate from the LLM can't poison an otherwise-good batch.
+const LLMSpamTweetSchema = z.object({
+  id: z.string(),
+  confidence: z.number(),
+  reason: z.string(),
+});
+const LLMCandidateKeywordSchema = z.object({
+  phrase: z.string().min(1),
+  evidence_tweet_ids: z.array(z.string()),
+});
+const LLMCandidateUserSchema = z.object({
+  handle: z.string().min(1),
+  evidence_tweet_ids: z.array(z.string()),
+  reason: z.string(),
+});
+
+export type LLMSpamTweet = z.infer<typeof LLMSpamTweetSchema>;
+export type LLMCandidateKeyword = z.infer<typeof LLMCandidateKeywordSchema>;
+export type LLMCandidateUser = z.infer<typeof LLMCandidateUserSchema>;
 
 export interface LLMAnalysisResult {
   spam_tweets: LLMSpamTweet[];
   candidate_keywords: LLMCandidateKeyword[];
   candidate_users: LLMCandidateUser[];
+}
+
+function filterValid<T>(arr: unknown, schema: z.ZodType<T>, label: string): T[] {
+  if (!Array.isArray(arr)) return [];
+  const out: T[] = [];
+  let dropped = 0;
+  for (const item of arr) {
+    const r = schema.safeParse(item);
+    if (r.success) out.push(r.data);
+    else dropped += 1;
+  }
+  if (dropped > 0) console.warn(`[tsf] dropped ${dropped} malformed ${label} from LLM response`);
+  return out;
 }
 
 function tryParse(s: string): unknown | null {
@@ -111,11 +141,11 @@ export class LLMClient {
     }
     const data = await resp.json() as { choices?: { message?: { content?: string } }[] };
     const content = data.choices?.[0]?.message?.content ?? "";
-    const parsed = parseLooseJson(content) as LLMAnalysisResult;
+    const parsed = parseLooseJson(content) as Record<string, unknown>;
     return {
-      spam_tweets: parsed.spam_tweets ?? [],
-      candidate_keywords: parsed.candidate_keywords ?? [],
-      candidate_users: parsed.candidate_users ?? [],
+      spam_tweets: filterValid(parsed.spam_tweets, LLMSpamTweetSchema, "spam_tweets"),
+      candidate_keywords: filterValid(parsed.candidate_keywords, LLMCandidateKeywordSchema, "candidate_keywords"),
+      candidate_users: filterValid(parsed.candidate_users, LLMCandidateUserSchema, "candidate_users"),
     };
   }
 }
