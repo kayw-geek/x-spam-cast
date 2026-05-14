@@ -40,4 +40,19 @@ describe("promptBuilder", () => {
     expect(system).not.toContain("User-provided domain notes");
     expect(system).not.toContain("Final reminder");
   });
+
+  it("OUTPUT_FORMAT requests a reason field for candidate_keywords", () => {
+    const { system } = buildPrompt([]);
+    const fmtIdx = system.indexOf("\"candidate_keywords\"");
+    expect(fmtIdx).toBeGreaterThan(0);
+    // Stop before the next field to avoid matching candidate_users.reason.
+    const usersIdx = system.indexOf("\"candidate_users\"", fmtIdx);
+    const slice = system.slice(fmtIdx, usersIdx);
+    expect(slice).toMatch(/"reason"/);
+  });
+
+  it("constrains the keyword reason to <=80 characters", () => {
+    const { system } = buildPrompt([]);
+    expect(system).toMatch(/keyword.*reason.*80/i);
+  });
 });

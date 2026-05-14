@@ -27,7 +27,7 @@ const OUTPUT_FORMAT = [
   "Output strict JSON only — no commentary, no markdown fences:",
   `{
   "spam_tweets": [{"id": "...", "confidence": 0.0-1.0, "reason": "..."}],
-  "candidate_keywords": [{"phrase": "...", "evidence_tweet_ids": [...]}],
+  "candidate_keywords": [{"phrase": "...", "reason": "...", "evidence_tweet_ids": [...]}],
   "candidate_users": [{"handle": "...", "evidence_tweet_ids": [...], "reason": "..."}]
 }`,
 ].join("\n");
@@ -39,6 +39,7 @@ const CANDIDATE_RULES = [
   "- Only nominate candidate_keywords or candidate_users when confidence ≥ 0.7.",
   "- evidence_tweet_ids MUST be drawn from the input id field — do not invent ids.",
   "- For tweets that are pure emoji, random-character lures, or otherwise have no stable extractable substring, prefer candidate_users (block by handle) over candidate_keywords.",
+  "- Each candidate_keyword reason MUST be ≤ 80 characters — a brief signal of why this phrase indicates spam (e.g. 'crypto giveaway lure', '中文引流话术'). Same constraint already applies to candidate_user reason.",
 ].join("\n");
 
 const CLUSTER_HEURISTIC = [
