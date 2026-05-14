@@ -52,6 +52,41 @@ describe("LLMClient", () => {
     expect(result.candidate_keywords).toEqual([]);
   });
 
+  it("parses reason field on candidate_keywords", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: JSON.stringify({
+          spam_tweets: [],
+          candidate_keywords: [
+            { phrase: "airdrop scam", evidence_tweet_ids: ["1", "2"], reason: "crypto giveaway lure" },
+          ],
+          candidate_users: [],
+        }) } }],
+      }),
+    }));
+    const result = await new LLMClient(cfg).analyze({ system: "s", user: "u" });
+    expect(result.candidate_keywords).toEqual([
+      { phrase: "airdrop scam", evidence_tweet_ids: ["1", "2"], reason: "crypto giveaway lure" },
+    ]);
+  });
+
+  it("accepts candidate_keywords without reason field (back-compat)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: JSON.stringify({
+          spam_tweets: [],
+          candidate_keywords: [{ phrase: "airdrop scam", evidence_tweet_ids: ["1"] }],
+          candidate_users: [],
+        }) } }],
+      }),
+    }));
+    const result = await new LLMClient(cfg).analyze({ system: "s", user: "u" });
+    expect(result.candidate_keywords).toHaveLength(1);
+    expect(result.candidate_keywords[0]).toEqual({ phrase: "airdrop scam", evidence_tweet_ids: ["1"] });
+  });
+
   it("throws if response not parseable JSON", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true,

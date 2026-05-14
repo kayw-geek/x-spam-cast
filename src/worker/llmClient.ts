@@ -11,6 +11,9 @@ const LLMSpamTweetSchema = z.object({
 const LLMCandidateKeywordSchema = z.object({
   phrase: z.string().min(1),
   evidence_tweet_ids: z.array(z.string()),
+  // Optional in the schema so an LLM that ignores the prompt instruction
+  // doesn't cause us to drop an otherwise-valid keyword candidate.
+  reason: z.string().optional(),
 });
 const LLMCandidateUserSchema = z.object({
   handle: z.string().min(1),
