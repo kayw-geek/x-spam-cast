@@ -4,6 +4,8 @@ import type { ExtensionState } from "./types";
 
 export const HideStyleEnum = z.enum(HIDE_STYLES);
 
+export const ReasonSourceEnum = z.enum(["llm-batch", "llm-marked", "manual", "pack"]);
+
 export const LLMConfigSchema = z.object({
   baseUrl: z.string().url(),
   apiKey: z.string(),
@@ -30,6 +32,8 @@ export const LearnedKeywordSchema = z.object({
   phrase: z.string().min(1),
   addedAt: z.number(),
   hits: z.number().int().nonnegative(),
+  reason: z.string().optional(),
+  source: ReasonSourceEnum.optional(),
 });
 
 export const LearnedUserSchema = z.object({
@@ -37,6 +41,7 @@ export const LearnedUserSchema = z.object({
   displayName: z.string().optional(),
   reason: z.string(),
   addedAt: z.number(),
+  source: ReasonSourceEnum.optional(),
 });
 
 export const QueuedTweetSchema = z.object({

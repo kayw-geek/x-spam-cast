@@ -19,10 +19,14 @@ export interface Config {
   subscriptionLastFetchedAt?: number;
 }
 
+export type ReasonSource = "llm-batch" | "llm-marked" | "manual" | "pack";
+
 export interface LearnedKeyword {
   phrase: string;
   addedAt: number;
   hits: number;
+  reason?: string;
+  source?: ReasonSource;
 }
 
 export interface LearnedUser {
@@ -30,6 +34,7 @@ export interface LearnedUser {
   displayName?: string;
   reason: string;
   addedAt: number;
+  source?: ReasonSource;
 }
 
 export interface QueuedTweet {
