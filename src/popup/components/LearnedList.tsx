@@ -1,8 +1,23 @@
 import React, { useEffect, useState } from "react";
-import type { ExtensionState, LearnedKeyword, LearnedUser } from "@/core/types";
+import type { ExtensionState, LearnedKeyword, LearnedUser, ReasonSource } from "@/core/types";
 import { send } from "@/core/messaging";
 import { mutateState } from "@/core/storage";
 import { Stats } from "./Stats";
+
+const sourceIcon = (src: ReasonSource | undefined): string => {
+  switch (src) {
+    case "llm-batch":
+    case "llm-marked": return "🤖";
+    case "manual": return "✋";
+    case "pack": return "📦";
+    default: return "💭";
+  }
+};
+
+const formatDate = (ts: number): string => {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 
 type BatchStatus =
   | { kind: "idle" }
@@ -26,6 +41,15 @@ export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Ele
   const [newKw, setNewKw] = useState("");
   const [newUser, setNewUser] = useState("");
   const [addFeedback, setAddFeedback] = useState<{ kind: "ok" | "info" | "err"; msg: string } | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  const toggleExpand = (key: string): void => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
 
   // Newest first — addedAt is a timestamp; subscription-imported items share a fetchedAt so
   // they cluster, but anything LLM-mined or manually-marked surfaces above older bulk imports.
@@ -109,7 +133,13 @@ export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Ele
     }
     await mutateState((s) => {
       if (s.learned.keywords.some((k) => k.phrase === phrase)) return;
-      s.learned.keywords.push({ phrase, addedAt: Date.now(), hits: 0 });
+      s.learned.keywords.push({
+        phrase,
+        addedAt: Date.now(),
+        hits: 0,
+        reason: "manually added by you",
+        source: "manual",
+      });
       s.whitelist.keywords = s.whitelist.keywords.filter((w) => w !== phrase);
     });
     setNewKw("");
@@ -140,9 +170,9 @@ export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Ele
     await mutateState((s) => {
       if (s.learned.users.some((u) => u.handle.toLowerCase() === lower)) return;
       const dn = s.cache.handleToDisplayName[handle];
-      const entry = dn !== undefined
-        ? { handle, displayName: dn, reason: "manually added", addedAt: Date.now() }
-        : { handle, reason: "manually added", addedAt: Date.now() };
+      const entry: LearnedUser = dn !== undefined
+        ? { handle, displayName: dn, reason: "manually added by you", addedAt: Date.now(), source: "manual" }
+        : { handle, reason: "manually added by you", addedAt: Date.now(), source: "manual" };
       s.learned.users.push(entry);
       s.whitelist.users = s.whitelist.users.filter((h) => h.toLowerCase() !== lower);
     });
@@ -261,15 +291,57 @@ export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Ele
           </button>
         </div>
         <ul className="space-y-1 px-2 pb-2 pt-1">
-          {sortedKeywords.map((k) => (
-            <li key={k.phrase} className="flex items-center justify-between bg-neutral-800 rounded px-2 py-1">
-              <span className="font-mono text-xs">
-                <span className={maskCls}>{k.phrase}</span>
-              </span>
-              <button onClick={() => deleteKeyword(k)}
-                className="text-red-400 hover:text-red-300 text-xs">delete</button>
-            </li>
-          ))}
+          {sortedKeywords.map((k) => {
+            const key = `kw:${k.phrase}`;
+            const isOpen = expanded.has(key);
+            return (
+              <li key={k.phrase} className="bg-neutral-800 rounded">
+                <div className="flex items-center justify-between px-2 py-1">
+                  <span className="font-mono text-xs min-w-0 truncate">
+                    <span className={maskCls}>{k.phrase}</span>
+                  </span>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => toggleExpand(key)}
+                      aria-expanded={isOpen}
+                      aria-label={`why was ${k.phrase} blocked`}
+                      className="text-neutral-500 hover:text-neutral-300 px-1 text-xs"
+                    >
+                      {isOpen ? "▾" : "···"}
+                    </button>
+                    <button onClick={() => deleteKeyword(k)}
+                      className="text-red-400 hover:text-red-300 text-xs">delete</button>
+                  </div>
+                </div>
+                {isOpen && (
+                  <div className="border-l-2 border-neutral-700 ml-2 mr-2 mb-2 px-2 py-1 bg-neutral-900 rounded-sm text-[11px]">
+                    {k.reason ? (
+                      <div className={maskCls}>
+                        <span>{sourceIcon(k.source)} </span>
+                        <span className="text-neutral-300 break-words">{k.reason}</span>
+                      </div>
+                    ) : (
+                      <div className="italic text-neutral-500">
+                        💭 no reason recorded
+                        <div className="text-[10px]">added before reason tracking</div>
+                      </div>
+                    )}
+                    <div className="text-[10px] text-neutral-500 mt-1">
+                      added {formatDate(k.addedAt)} ·{" "}
+                      <a
+                        href={`https://x.com/search?q=${encodeURIComponent(k.phrase)}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="underline hover:text-neutral-300"
+                      >
+                        evidence ↗
+                      </a>
+                    </div>
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ul>
       </details>
 
@@ -296,16 +368,51 @@ export function LearnedList({ state }: { state: ExtensionState }): React.JSX.Ele
           </button>
         </div>
         <ul className="space-y-1 px-2 pb-2 pt-1">
-          {sortedUsers.map((u) => (
-            <li key={u.handle} className="flex items-center justify-between bg-neutral-800 rounded px-2 py-1">
-              <span className="text-xs min-w-0 truncate">
-                {u.displayName && <span className={`text-neutral-200 ${maskCls}`}>{u.displayName} </span>}
-                <span className={`font-mono text-neutral-500 ${maskCls}`}>@{u.handle}</span>
-              </span>
-              <button onClick={() => deleteUser(u)}
-                className="text-red-400 hover:text-red-300 text-xs ml-2 shrink-0">delete</button>
-            </li>
-          ))}
+          {sortedUsers.map((u) => {
+            const key = `user:${u.handle}`;
+            const isOpen = expanded.has(key);
+            return (
+              <li key={u.handle} className="bg-neutral-800 rounded">
+                <div className="flex items-center justify-between px-2 py-1">
+                  <span className="text-xs min-w-0 truncate">
+                    {u.displayName && <span className={`text-neutral-200 ${maskCls}`}>{u.displayName} </span>}
+                    <span className={`font-mono text-neutral-500 ${maskCls}`}>@{u.handle}</span>
+                  </span>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => toggleExpand(key)}
+                      aria-expanded={isOpen}
+                      aria-label={`why was ${u.handle} blocked`}
+                      className="text-neutral-500 hover:text-neutral-300 px-1 text-xs"
+                    >
+                      {isOpen ? "▾" : "···"}
+                    </button>
+                    <button onClick={() => deleteUser(u)}
+                      className="text-red-400 hover:text-red-300 text-xs">delete</button>
+                  </div>
+                </div>
+                {isOpen && (
+                  <div className="border-l-2 border-neutral-700 ml-2 mr-2 mb-2 px-2 py-1 bg-neutral-900 rounded-sm text-[11px]">
+                    <div className={maskCls}>
+                      <span>{sourceIcon(u.source)} </span>
+                      <span className="text-neutral-300 break-words">{u.reason}</span>
+                    </div>
+                    <div className="text-[10px] text-neutral-500 mt-1">
+                      added {formatDate(u.addedAt)} ·{" "}
+                      <a
+                        href={`https://x.com/${u.handle}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="underline hover:text-neutral-300"
+                      >
+                        evidence ↗
+                      </a>
+                    </div>
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ul>
       </details>
 
