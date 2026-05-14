@@ -72,6 +72,8 @@ export async function applyPack(
         phrase: k.phrase,
         addedAt: appliedAt,
         hits: 0,
+        reason: `from ${source}`,
+        source: "pack",
       };
       s.learned.keywords.push(entry);
       learnedKw.add(k.phrase);
@@ -85,6 +87,7 @@ export async function applyPack(
         handle: u.handle,
         reason: u.reason ?? `from ${source}`,
         addedAt: appliedAt,
+        source: "pack",
       };
       s.learned.users.push(entry);
       learnedUser.add(lower);
