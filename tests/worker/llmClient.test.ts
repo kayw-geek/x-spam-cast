@@ -87,6 +87,27 @@ describe("LLMClient", () => {
     expect(result.candidate_keywords[0]).toEqual({ phrase: "airdrop scam", evidence_tweet_ids: ["1"] });
   });
 
+  it("drops candidate_keywords whose phrase exceeds MAX_KEYWORD_LEN", async () => {
+    const longPhrase = "DM me for daily crypto signals at 9am EST every weekday";
+    const shortPhrase = "crypto signals";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: JSON.stringify({
+          spam_tweets: [],
+          candidate_keywords: [
+            { phrase: longPhrase, evidence_tweet_ids: ["1"], reason: "long" },
+            { phrase: shortPhrase, evidence_tweet_ids: ["2"], reason: "short" },
+          ],
+          candidate_users: [],
+        }) } }],
+      }),
+    }));
+    const result = await new LLMClient(cfg).analyze({ system: "s", user: "u" });
+    expect(result.candidate_keywords).toHaveLength(1);
+    expect(result.candidate_keywords[0]!.phrase).toBe(shortPhrase);
+  });
+
   it("throws if response not parseable JSON", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true,

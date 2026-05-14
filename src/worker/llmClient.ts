@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { LLMConfig } from "@/core/types";
+import { MAX_KEYWORD_LEN } from "@/core/constants";
 
 // Per-item schemas — invalid items are dropped (not the whole response) so a single
 // malformed candidate from the LLM can't poison an otherwise-good batch.
@@ -9,7 +10,10 @@ const LLMSpamTweetSchema = z.object({
   reason: z.string(),
 });
 const LLMCandidateKeywordSchema = z.object({
-  phrase: z.string().min(1),
+  // Hard cap: substring match is all-or-nothing, so a sentence-length phrase
+  // never matches variants. Defence-in-depth — the prompt also tells the LLM,
+  // but models routinely ignore it.
+  phrase: z.string().min(1).max(MAX_KEYWORD_LEN),
   evidence_tweet_ids: z.array(z.string()),
   // Optional in the schema so an LLM that ignores the prompt instruction
   // doesn't cause us to drop an otherwise-valid keyword candidate.

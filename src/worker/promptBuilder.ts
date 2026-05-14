@@ -1,4 +1,5 @@
 import type { QueuedTweet } from "@/core/types";
+import { MAX_KEYWORD_LEN } from "@/core/constants";
 
 // ────────────────────────────────────────────────────────────
 // Built-in prompt sections — language-agnostic. For language-
@@ -35,7 +36,7 @@ const OUTPUT_FORMAT = [
 const CANDIDATE_RULES = [
   "Constraints:",
   "- **JSON safety**: NEVER use ASCII double-quote (\") inside reason or phrase fields — it breaks JSON parsing. To quote text, use single quotes ' ', or your language's native quotation marks (e.g. « », 「」, “”, ‘ ’).",
-  "- candidate_keywords phrases must be specific enough to avoid matching normal conversation. Single common words are too broad — prefer multi-word patterns or distinctive substrings.",
+  `- candidate_keywords phrases MUST be SHORT (≤ ${MAX_KEYWORD_LEN} characters; aim for 2-5 words / 4-12 Chinese chars) AND specific. Why: matching is plain substring — long phrases miss as soon as the spammer changes one word, full sentences NEVER match variants. Extract the distinctive core, not a full quote. Single common words are too broad; phrases past ${MAX_KEYWORD_LEN} chars are AUTO-DROPPED.`,
   "- Only nominate candidate_keywords or candidate_users when confidence ≥ 0.7.",
   "- evidence_tweet_ids MUST be drawn from the input id field — do not invent ids.",
   "- For tweets that are pure emoji, random-character lures, or otherwise have no stable extractable substring, prefer candidate_users (block by handle) over candidate_keywords.",
@@ -49,9 +50,10 @@ const CLUSTER_HEURISTIC = [
   "  **Strategy: prefer one keyword over many user blocks**",
   "  A keyword block is O(1), permanent, and catches future accounts using the same template. A user block is O(N) — one block per spammer.",
   "",
-  "  1. **First try to extract a candidate_keyword**: find the longest common substring shared by the cluster, specific enough to avoid false matches. Examples (translate to your language as needed):",
-  "     - 7 tweets all contain \"DM for crypto signals\" → candidate_keyword \"DM for crypto signals\"",
-  "     - 5 tweets all contain \"OnlyFans link in bio\" → candidate_keyword \"OnlyFans link in bio\"",
+  `  1. **First try to extract a candidate_keyword**: find the SHORTEST distinctive common substring shared by the cluster (2-5 words / ≤ ${MAX_KEYWORD_LEN} chars). Specific enough to avoid false matches; short enough to survive when the spammer rewords part of the tweet. Examples (translate to your language as needed):`,
+  "     - 7 tweets all contain variants of crypto signal lures → candidate_keyword \"crypto signals\" (NOT \"DM me for daily crypto signals at 9am\")",
+  "     - 5 tweets all push OnlyFans → candidate_keyword \"OnlyFans link\" (NOT \"check the OnlyFans link in my bio everyone\")",
+  "     - 多条推文带引流 → candidate_keyword \"加微信\" 或 \"+v私聊\" (NOT \"加我微信看更多精彩内容哦\")",
   "     If you successfully extracted a keyword, you MAY OMIT the corresponding candidate_users to avoid redundancy.",
   "",
   "  2. **Only fall back to candidate_users when no clean substring exists** (cluster is pure emoji / random characters / no stable keyword):",

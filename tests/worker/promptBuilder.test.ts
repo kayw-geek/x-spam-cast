@@ -55,4 +55,10 @@ describe("promptBuilder", () => {
     const { system } = buildPrompt([]);
     expect(system).toMatch(/keyword.*reason.*80/i);
   });
+
+  it("tells the LLM that long keyword phrases are auto-dropped", () => {
+    const { system } = buildPrompt([]);
+    expect(system).toMatch(/AUTO-DROPPED/);
+    expect(system).toMatch(/30 characters/);
+  });
 });
