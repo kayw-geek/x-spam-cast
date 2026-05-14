@@ -51,6 +51,7 @@ export interface Candidate {
   evidence: string[];
   suggestedAt: number;
   llmReasoning: string;
+  source?: ReasonSource;
 }
 
 export interface Stats {

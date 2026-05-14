@@ -58,6 +58,7 @@ export const CandidateSchema = z.object({
   evidence: z.array(z.string()),
   suggestedAt: z.number(),
   llmReasoning: z.string(),
+  source: ReasonSourceEnum.optional(),
 });
 
 export const StatsSchema = z.object({

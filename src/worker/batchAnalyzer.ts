@@ -2,7 +2,7 @@ import { Queue } from "./queue";
 import { LLMClient, type LLMAnalysisResult } from "./llmClient";
 import { buildPrompt } from "./promptBuilder";
 import { mutateState } from "@/core/storage";
-import type { ExtensionState, Candidate, QueuedTweet } from "@/core/types";
+import type { ExtensionState, Candidate, QueuedTweet, LearnedKeyword, LearnedUser } from "@/core/types";
 
 export interface AnalyzeResult {
   newCandidates: Candidate[];
@@ -38,7 +38,7 @@ export class BatchAnalyzer {
       throw e;
     }
 
-    const collected = collectCandidates(result, state, "batch");
+    const collected = collectCandidates(result, state, "llm-batch");
 
     await mutateState((s) => {
       s.stats.totalAnalyzed += tweets.length;
@@ -58,7 +58,7 @@ export class BatchAnalyzer {
     const prompt = buildPrompt([tweet], state.config.customPrompt);
     const result = await client.analyze(prompt);
 
-    const collected = collectCandidates(result, state, `marked-tweet ${tweet.tweetId}`);
+    const collected = collectCandidates(result, state, "llm-marked");
 
     await mutateState((s) => {
       s.pending.userMarked.push({ tweetId: tweet.tweetId, markedAt: Date.now() });
@@ -93,7 +93,7 @@ function recordTokens(s: ExtensionState, usage: { promptTokens: number; completi
 function collectCandidates(
   result: LLMAnalysisResult,
   state: ExtensionState,
-  source: string,
+  source: "llm-batch" | "llm-marked",
 ): { newCandidates: Candidate[]; whitelistRejected: number } {
   // Post-filter: exact-match whitelist on LLM-proposed phrases / handles.
   // Pre-filter dropped on purpose — substring whitelist on tweet text was an evasion vector
@@ -110,9 +110,12 @@ function collectCandidates(
     if (learnedKeywords.has(k.phrase)) continue;
     if (wlKeywords.has(k.phrase)) { whitelistRejected++; continue; }
     newCandidates.push({
-      type: "keyword", value: k.phrase,
-      evidence: k.evidence_tweet_ids, suggestedAt: Date.now(),
-      llmReasoning: source === "batch" ? "spam pattern" : `from ${source}`,
+      type: "keyword",
+      value: k.phrase,
+      evidence: k.evidence_tweet_ids,
+      suggestedAt: Date.now(),
+      llmReasoning: k.reason ?? "",
+      source,
     });
   }
   for (const u of result.candidate_users) {
@@ -120,11 +123,42 @@ function collectCandidates(
     if (learnedUsers.has(lower)) continue;
     if (wlUsers.has(lower)) { whitelistRejected++; continue; }
     newCandidates.push({
-      type: "user", value: u.handle,
-      evidence: u.evidence_tweet_ids, suggestedAt: Date.now(),
-      llmReasoning: source === "batch" ? u.reason : `${u.reason} (from ${source})`,
+      type: "user",
+      value: u.handle,
+      evidence: u.evidence_tweet_ids,
+      suggestedAt: Date.now(),
+      llmReasoning: u.reason,
+      source,
     });
   }
 
   return { newCandidates, whitelistRejected };
+}
+
+export type LearnedConversion =
+  | { kind: "keyword"; entry: LearnedKeyword }
+  | { kind: "user"; entry: LearnedUser };
+
+// Pure transform: Candidate → the LearnedKeyword/User entry the caller will push.
+// Lives here so the popup-side manual-add path and the background apply path can
+// share the same shape decisions (reason fallback, source default).
+export function candidateToLearned(c: Candidate, addedAt: number): LearnedConversion {
+  const source = c.source ?? "llm-batch";
+  if (c.type === "keyword") {
+    const entry: LearnedKeyword = {
+      phrase: c.value,
+      addedAt,
+      hits: 0,
+      source,
+    };
+    if (c.llmReasoning) entry.reason = c.llmReasoning;
+    return { kind: "keyword", entry };
+  }
+  const entry: LearnedUser = {
+    handle: c.value,
+    reason: c.llmReasoning,
+    addedAt,
+    source,
+  };
+  return { kind: "user", entry };
 }
