@@ -1,12 +1,12 @@
 import { defineBackground } from "wxt/utils/define-background";
 import { Queue } from "@/worker/queue";
-import { BatchAnalyzer } from "@/worker/batchAnalyzer";
-import { refreshSubscription, importPack, SpamPackSchema, type RefreshReport, type ImportPackReport } from "@/worker/subscription";
+import { BatchAnalyzer, candidateToLearned } from "@/worker/batchAnalyzer";
+import { refreshSubscription, importPack, applyPack, SpamPackSchema, type RefreshReport, type ImportPackReport } from "@/worker/subscription";
 import { loadState, mutateState, saveState } from "@/core/storage";
 import { onMessage, type Message } from "@/core/messaging";
 import { pushSync, pullSync, type PushSyncResult, type PullSyncResult } from "@/core/syncStorage";
 import { DEFAULT_PACK } from "@/data/defaultPack";
-import type { Candidate, LearnedUser, LearnedKeyword } from "@/core/types";
+import type { Candidate, LearnedUser } from "@/core/types";
 
 // Local-only filtering — no Twitter native mute, no GitHub PAT, no UI automation.
 // Backup is via chrome.storage.sync (signs in with the user's Chrome account, ~91 KB).
@@ -24,20 +24,16 @@ export default defineBackground(() => {
     if (details.reason !== "install") return;
     const s = await loadState();
     if (s.learned.keywords.length > 0 || s.learned.users.length > 0) return;
-    await mutateState((m) => {
-      const now = Date.now();
-      for (const k of DEFAULT_PACK.keywords) {
-        if (m.learned.keywords.some((x) => x.phrase === k.phrase)) continue;
-        const entry: LearnedKeyword = { phrase: k.phrase, addedAt: now, hits: 0 };
-        m.learned.keywords.push(entry);
-      }
-      for (const u of DEFAULT_PACK.users) {
-        const lower = u.handle.toLowerCase();
-        if (m.learned.users.some((x) => x.handle.toLowerCase() === lower)) continue;
-        m.learned.users.push({ handle: u.handle, reason: u.reason, addedAt: now });
-      }
-    });
-    console.log("[tsf] first-run: seeded", DEFAULT_PACK.keywords.length, "keywords from", DEFAULT_PACK.name);
+    const stats = await applyPack(
+      {
+        version: 1,
+        name: DEFAULT_PACK.name,
+        keywords: DEFAULT_PACK.keywords.map((k) => ({ phrase: k.phrase })),
+        users: DEFAULT_PACK.users.map((u) => ({ handle: u.handle, reason: u.reason })),
+      },
+      `starter pack ${DEFAULT_PACK.name}`,
+    );
+    console.log("[tsf] first-run: seeded", stats.newKeywords, "keywords from", DEFAULT_PACK.name);
   });
 
   // ── Subscription auto-refresh ────────────────────────────────────────────
@@ -108,24 +104,17 @@ export default defineBackground(() => {
   // ── Candidate apply / remove ─────────────────────────────────────────────
   const applyCandidate = async (candidate: Candidate): Promise<void> => {
     await mutateState((s) => {
-      if (candidate.type === "keyword") {
-        if (s.learned.keywords.some((k) => k.phrase === candidate.value)) return;
-        s.learned.keywords.push({
-          phrase: candidate.value,
-          addedAt: Date.now(),
-          hits: 0,
-        });
+      const conv = candidateToLearned(candidate, Date.now());
+      if (conv.kind === "keyword") {
+        if (s.learned.keywords.some((k) => k.phrase === conv.entry.phrase)) return;
+        s.learned.keywords.push(conv.entry);
       } else {
-        const lower = candidate.value.toLowerCase();
+        const lower = conv.entry.handle.toLowerCase();
         if (s.learned.users.some((u) => u.handle.toLowerCase() === lower)) return;
-        const newUser: LearnedUser = {
-          handle: candidate.value,
-          reason: candidate.llmReasoning,
-          addedAt: Date.now(),
-        };
-        const cachedDn = s.cache.handleToDisplayName[candidate.value];
-        if (cachedDn !== undefined) newUser.displayName = cachedDn;
-        s.learned.users.push(newUser);
+        const entry: LearnedUser = { ...conv.entry };
+        const cachedDn = s.cache.handleToDisplayName[entry.handle];
+        if (cachedDn !== undefined) entry.displayName = cachedDn;
+        s.learned.users.push(entry);
       }
     });
   };
@@ -168,6 +157,7 @@ export default defineBackground(() => {
               handle,
               reason: `manually marked from tweet ${msg.payload.tweetId}`,
               addedAt: Date.now(),
+              source: "manual",
             };
             const dn = msg.payload.tweet.displayName ?? s.cache.handleToDisplayName[handle];
             if (dn !== undefined) newUser.displayName = dn;
